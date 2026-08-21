@@ -355,7 +355,7 @@ def scoring(feed):
 
 
 def batting(feed):
-    """BATTING - Jays hitters who contributed: hits/AB, HR, RBI."""
+    """BATTING - full lineup: everyone who has batted (hits/AB, plus BB/HR/RBI)."""
     box = feed.get("liveData", {}).get("boxscore", {}).get("teams", {})
     _, _, jays_side = _feed_teams(feed)
     side = box.get(jays_side, {})
@@ -364,22 +364,29 @@ def batting(feed):
     for pid in side.get("batters", []):
         p = players.get(f"ID{pid}", {})
         bat = p.get("stats", {}).get("batting", {})
-        h = bat.get("hits", 0) or 0
         ab = bat.get("atBats", 0) or 0
+        h = bat.get("hits", 0) or 0
+        bb = bat.get("baseOnBalls", 0) or 0
+        hbp = bat.get("hitByPitch", 0) or 0
         hr = bat.get("homeRuns", 0) or 0
         rbi = bat.get("rbi", 0) or 0
-        if h == 0 and hr == 0 and rbi == 0:
-            continue
+        pa = bat.get("plateAppearances")
+        if pa is None:
+            pa = ab + bb + hbp + (bat.get("sacFlies", 0) or 0) + (bat.get("sacBunts", 0) or 0)
+        if pa < 1:
+            continue  # in the order but hasn't come to the plate yet
         name = _lastname(p.get("person", {}).get("fullName", ""))
         extra = []
         if hr:
             extra.append(f"{hr}HR")
         if rbi:
             extra.append(f"{rbi}RBI")
+        if bb:
+            extra.append(f"{bb}BB")
         tail = (", " + ", ".join(extra)) if extra else ""
         out.append(f"{name} {h}-{ab}{tail}")
     if not out:
-        return "No Jays hits yet."
+        return "No Jays batters yet."
     return "TOR batting:\n" + "\n".join(out)
 
 
@@ -404,31 +411,68 @@ def _decisions(feed):
     return {gid("winner"): "W", gid("loser"): "L", gid("save"): "SV"}
 
 
-def pitching(feed):
-    """PITCHING - Jays pitchers: IP, ER, H, K, W/L/SV decision, innings used."""
+def _pitching_lines(feed, side_key, ranges, decisions):
     box = feed.get("liveData", {}).get("boxscore", {}).get("teams", {})
-    _, _, jays_side = _feed_teams(feed)
-    side = box.get(jays_side, {})
+    side = box.get(side_key, {})
     players = side.get("players", {})
-    ranges = _pitcher_inning_ranges(feed)
-    decisions = _decisions(feed)
     out = []
     for pid in side.get("pitchers", []):
         p = players.get(f"ID{pid}", {})
-        name = p.get("person", {}).get("fullName", "")
+        name = _lastname(p.get("person", {}).get("fullName", ""))
         pit = p.get("stats", {}).get("pitching", {})
         ip = pit.get("inningsPitched", "0.0")
         er = pit.get("earnedRuns", 0)
         hits = pit.get("hits", 0)
         k = pit.get("strikeOuts", 0)
+        pitches = pit.get("pitchesThrown", pit.get("numberOfPitches"))
+        pitch_s = f" {pitches}P" if pitches else ""
         decision = decisions.get(pid, "")
         dec_s = f" {decision}" if decision else ""
         rng = ranges.get(pid)
         rng_s = f" (inn {rng})" if rng else ""
-        out.append(f"{name and _lastname(name)} {ip}IP {er}ER {hits}H {k}K{dec_s}{rng_s}")
-    if not out:
-        return "No Jays pitching data yet."
-    return "TOR pitching:\n" + "\n".join(out)
+        out.append(f"{name} {ip}IP {er}ER {hits}H {k}K{pitch_s}{dec_s}{rng_s}")
+    return out
+
+
+def pitching(feed):
+    """PITCHING - both teams' pitchers: IP, ER, H, K, pitch count, W/L/SV, innings."""
+    ranges = _pitcher_inning_ranges(feed)
+    decisions = _decisions(feed)
+    away, home, jays_side = _feed_teams(feed)
+    opp_side = "home" if jays_side == "away" else "away"
+    jays_ab = (away if jays_side == "away" else home).get("abbreviation", "TOR")
+    opp_ab = (home if jays_side == "away" else away).get("abbreviation", "OPP")
+    jays_lines = _pitching_lines(feed, jays_side, ranges, decisions)
+    opp_lines = _pitching_lines(feed, opp_side, ranges, decisions)
+    if not jays_lines and not opp_lines:
+        return "No pitching data yet."
+    blocks = [f"{jays_ab} pitching:\n" + ("\n".join(jays_lines) if jays_lines else "none yet"),
+              f"{opp_ab} pitching:\n" + ("\n".join(opp_lines) if opp_lines else "none yet")]
+    return "\n\n".join(blocks)
+
+
+def bases(feed):
+    """BASES - who's on base right now (live game only)."""
+    if feed.get("gameData", {}).get("status", {}).get("abstractGameState") != "Live":
+        return "No Jays game in progress."
+    ls = feed.get("liveData", {}).get("linescore", {})
+    off = ls.get("offense", {})
+
+    def runner(key):
+        return _lastname(off.get(key, {}).get("fullName", "")) or "empty"
+
+    half = ls.get("inningState", "")
+    inn = ls.get("currentInningOrdinal", "")
+    outs = ls.get("outs")
+    header = f"Bases ({half} {inn}".strip()
+    if outs is not None:
+        header += f", {outs} out"
+    header += "):"
+    lines = [header, f"1B: {runner('first')}", f"2B: {runner('second')}", f"3B: {runner('third')}"]
+    batter = off.get("batter", {}).get("fullName")
+    if batter:
+        lines.append(f"AB: {_lastname(batter)}")
+    return "\n".join(lines)
 
 
 def full(feed):
@@ -462,6 +506,10 @@ def cmd_batting():
 
 def cmd_pitching():
     return _detail(pitching)
+
+
+def cmd_bases():
+    return _detail(bases)
 
 
 def cmd_full():
