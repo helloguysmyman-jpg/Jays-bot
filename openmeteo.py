@@ -1,15 +1,17 @@
-"""Current conditions + 24h hourly strip for Killarney PP via Open-Meteo.
+"""All Killarney PP weather via Open-Meteo (free, no key, no heavy deps).
 
-Free, no key. Open-Meteo is used for the quantitative pieces (now-cast and
-the hourly temperature/rain strip); the worded day/night forecast and
-official warnings come from Environment Canada (see eccc.py).
-Data source: Open-Meteo.com (CC BY 4.0).
+Covers current conditions, a 24h hourly strip, worded today/tonight, a 3-day
+outlook, and a forecast-based severe-weather watch. Open-Meteo does not carry
+official government warnings, so ALERTS is derived from the forecast (thunder,
+heavy precip, strong wind, freezing) and is clearly labelled as such - not an
+official Environment Canada warning. Data source: Open-Meteo.com (CC BY 4.0).
 """
 import logging
 
 import requests
 
-import config, util
+import config
+import util
 from cache import cache
 
 log = logging.getLogger(__name__)
@@ -28,21 +30,15 @@ WMO = {
     85: "Snow showers", 86: "Snow showers", 95: "Thunderstorm",
     96: "Thunderstorm+hail", 99: "Thunderstorm+hail",
 }
-COMPASS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
-
-# WMO weather code -> emoji
-EMOJI = {
-    0: "\u2600\uFE0F", 1: "\U0001F324\uFE0F", 2: "\u26C5", 3: "\u2601\uFE0F",
-    45: "\U0001F32B\uFE0F", 48: "\U0001F32B\uFE0F",
-    51: "\U0001F327\uFE0F", 53: "\U0001F327\uFE0F", 55: "\U0001F327\uFE0F",
-    56: "\U0001F327\uFE0F", 57: "\U0001F327\uFE0F",
-    61: "\U0001F327\uFE0F", 63: "\U0001F327\uFE0F", 65: "\U0001F327\uFE0F",
-    66: "\U0001F327\uFE0F", 67: "\U0001F327\uFE0F",
-    71: "\u2744\uFE0F", 73: "\u2744\uFE0F", 75: "\u2744\uFE0F", 77: "\u2744\uFE0F",
-    80: "\U0001F326\uFE0F", 81: "\U0001F327\uFE0F", 82: "\u26C8\uFE0F",
-    85: "\U0001F328\uFE0F", 86: "\U0001F328\uFE0F",
-    95: "\u26C8\uFE0F", 96: "\u26C8\uFE0F", 99: "\u26C8\uFE0F",
+WMO_SHORT = {
+    0: "clear", 1: "clear", 2: "pt cloud", 3: "cloud", 45: "fog", 48: "fog",
+    51: "drizzle", 53: "drizzle", 55: "drizzle", 56: "frz driz", 57: "frz driz",
+    61: "rain", 63: "rain", 65: "hvy rain", 66: "frz rain", 67: "frz rain",
+    71: "snow", 73: "snow", 75: "hvy snow", 77: "snow", 80: "showers",
+    81: "showers", 82: "hvy shwr", 85: "snow shwr", 86: "snow shwr",
+    95: "storm", 96: "storm", 99: "storm",
 }
+COMPASS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
 
 
 def _fetch():
@@ -55,8 +51,11 @@ def _fetch():
         "timezone": config.TIMEZONE,
         "current": ("temperature_2m,apparent_temperature,precipitation,"
                     "weather_code,wind_speed_10m,wind_direction_10m"),
-        "hourly": "precipitation_probability,weather_code,temperature_2m",
-        "forecast_days": 2,
+        "hourly": ("precipitation_probability,precipitation,weather_code,"
+                   "temperature_2m,wind_speed_10m,wind_gusts_10m"),
+        "daily": ("weather_code,temperature_2m_max,temperature_2m_min,"
+                  "precipitation_probability_max"),
+        "forecast_days": 4,
         "wind_speed_unit": "kmh",
     }
     resp = requests.get(URL, params=params, headers=_HEADERS,
@@ -89,6 +88,13 @@ def _hhmm(iso):
     return f"{hh % 12 or 12}{'AM' if hh < 12 else 'PM'}"
 
 
+def _at(arr, i):
+    return arr[i] if arr and i is not None and i < len(arr) else None
+
+
+# --------------------------------------------------------------------------
+# Commands
+# --------------------------------------------------------------------------
 def current_weather():
     """NOW - current temp, feels-like, conditions, wind, rain chance."""
     data = _fetch()
@@ -98,19 +104,14 @@ def current_weather():
     cond = WMO.get(cur.get("weather_code"), "Unknown")
     wind = util.round_num(cur.get("wind_speed_10m"))
     wdir = _compass(cur.get("wind_direction_10m"))
-    i = _hour_index(data)
-    pops = data.get("hourly", {}).get("precipitation_probability", [])
-    pop = pops[i] if i is not None and i < len(pops) else None
-
+    pop = _at(data.get("hourly", {}).get("precipitation_probability", []), _hour_index(data))
     head = f"{config.LOCATION_NAME}: {temp}C"
     if feels is not None and feels != temp:
         head += f" (feels {feels})"
     segs = [f"{head}, {cond}", f"Wind {wind} km/h {wdir}".strip()]
     if pop is not None:
         segs.append(f"Rain {pop}%")
-    emoji = EMOJI.get(cur.get("weather_code"), "")
-    prefix = f"{emoji} " if emoji else ""
-    return prefix + ". ".join(segs) + "."
+    return ". ".join(segs) + "."
 
 
 def hourly_24():
@@ -125,7 +126,121 @@ def hourly_24():
         return "Hourly data unavailable right now."
     pts = []
     for j in range(i, min(i + 24, len(times)), 3):
-        temp = util.round_num(temps[j]) if j < len(temps) else "?"
-        pop = pops[j] if j < len(pops) else "?"
-        pts.append(f"{_hhmm(times[j])} {temp}C {pop}%")
-    return f"\U0001F550 {config.LOCATION_NAME} 24h (temp/rain): " + " | ".join(pts)
+        pts.append(f"{_hhmm(times[j])} {util.round_num(_at(temps, j))}C {_at(pops, j)}%")
+    return f"{config.LOCATION_NAME} 24h (temp/rain): " + " | ".join(pts)
+
+
+def _overnight_code(data):
+    hourly = data.get("hourly", {})
+    times = hourly.get("time", [])
+    codes = hourly.get("weather_code", [])
+    now = util.now_et().strftime("%Y-%m-%dT%H:00")
+    for i, t in enumerate(times):
+        if t.endswith("T00:00") and t > now and i < len(codes):
+            return codes[i]
+    return None
+
+
+def today():
+    """TODAY - worded today + tonight, with a severe-weather banner if any."""
+    data = _fetch()
+    daily = data.get("daily", {})
+    codes = daily.get("weather_code", [])
+    hi = daily.get("temperature_2m_max", [])
+    lo = daily.get("temperature_2m_min", [])
+    pops = daily.get("precipitation_probability_max", [])
+    if not codes:
+        return "Forecast unavailable right now."
+    day_cond = WMO.get(codes[0], "?")
+    night_cond = WMO.get(_overnight_code(data), day_cond)
+    pop = _at(pops, 0)
+    lines = [f"Today: {day_cond}. High {util.round_num(_at(hi, 0))}."
+             + (f" Rain {pop}%." if pop is not None else ""),
+             f"Tonight: {night_cond}. Low {util.round_num(_at(lo, 0))}."]
+    banner = _alert_banner(data)
+    body = "\n".join(lines)
+    return f"{banner}\n{body}" if banner else body
+
+
+def forecast():
+    """FORECAST - compact next-3-day outlook."""
+    data = _fetch()
+    daily = data.get("daily", {})
+    times = daily.get("time", [])
+    codes = daily.get("weather_code", [])
+    tmax = daily.get("temperature_2m_max", [])
+    tmin = daily.get("temperature_2m_min", [])
+    pops = daily.get("precipitation_probability_max", [])
+    if not times:
+        return "Forecast unavailable right now."
+    pieces = []
+    for i in range(min(3, len(times))):
+        try:
+            label = util.parse_local_date(times[i]).strftime("%a")
+        except ValueError:
+            label = times[i]
+        cond = WMO_SHORT.get(_at(codes, i), "")
+        piece = f"{label} {cond} {util.round_num(_at(tmax, i))}/{util.round_num(_at(tmin, i))}"
+        pop = _at(pops, i)
+        if pop is not None:
+            piece += f" {pop}%"
+        pieces.append(piece)
+    return f"{config.LOCATION_NAME} 3-day: " + " | ".join(pieces)
+
+
+# --------------------------------------------------------------------------
+# Forecast-based severe-weather watch (NOT an official ECCC warning)
+# --------------------------------------------------------------------------
+def _severe_events(data):
+    i = _hour_index(data)
+    hourly = data.get("hourly", {})
+    times = hourly.get("time", [])
+    if i is None or not times:
+        return []
+    window = list(range(i, min(i + 24, len(times))))
+    codes = hourly.get("weather_code", [])
+    gusts = hourly.get("wind_gusts_10m", [])
+    winds = hourly.get("wind_speed_10m", [])
+
+    def hits(codeset):
+        return [j for j in window if _at(codes, j) in codeset]
+
+    events = []
+    for label, codeset in (("Thunderstorms", {95, 96, 99}),
+                           ("Heavy rain", {65, 82}),
+                           ("Heavy snow", {75, 86}),
+                           ("Freezing rain", {56, 57, 66, 67})):
+        h = hits(codeset)
+        if h:
+            events.append((label, h))
+    windy = [j for j in window if (_at(gusts, j) or _at(winds, j) or 0) >= 60]
+    if windy:
+        events.append(("Strong winds", windy))
+    return events
+
+
+def _span(times, h):
+    if h[-1] + 1 < len(times):
+        return f"{_hhmm(times[h[0]])}-{_hhmm(times[h[-1] + 1])}"
+    return f"from {_hhmm(times[h[0]])}"
+
+
+def _alert_banner(data):
+    events = _severe_events(data)
+    if not events:
+        return ""
+    label = events[0][0]
+    extra = f" (+{len(events) - 1} more)" if len(events) > 1 else ""
+    return f"WATCH: {label}{extra} - forecast-based, not an official warning"
+
+
+def alerts():
+    """ALERTS - forecast-based severe-weather watch for the next 24h."""
+    data = _fetch()
+    events = _severe_events(data)
+    times = data.get("hourly", {}).get("time", [])
+    if not events:
+        return f"{config.LOCATION_NAME}: no severe weather in next 24h (forecast-based)."
+    parts = [f"{label} {_span(times, h)}" for label, h in events]
+    return (f"{config.LOCATION_NAME} watch (forecast-based): " + "; ".join(parts)
+            + ". Not an official ECCC warning - check weather.gc.ca for those.")

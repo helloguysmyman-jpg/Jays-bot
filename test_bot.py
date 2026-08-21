@@ -7,7 +7,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import mlb
 import openmeteo
-import eccc
 import router
 import util
 from cache import cache
@@ -144,8 +143,7 @@ def _fake_get(url, params=None, ttl=0, cache_key=None):
     if "/standings" in url:
         return STANDINGS
     if "/people/" in url:
-        pid = int(url.rstrip("/").split("/")[-1])
-        return _pitcher_people(pid)
+        return _pitcher_people(int(url.rstrip("/").split("/")[-1]))
     raise AssertionError(f"unexpected _get for {url}")
 
 
@@ -155,27 +153,36 @@ def _patch_detail(monkeypatch):
 
 
 # ==========================================================================
-# Weather fixtures
+# Weather fixtures (Open-Meteo shaped)
 # ==========================================================================
 _base = util.now_et().replace(minute=0, second=0, microsecond=0)
-_TIMES = [(_base + timedelta(hours=k)).strftime("%Y-%m-%dT%H:00") for k in range(26)]
-OPENMETEO = {
-    "current": {"temperature_2m": 18.3, "apparent_temperature": 17.1, "precipitation": 0.0,
-                "weather_code": 2, "wind_speed_10m": 12.4, "wind_direction_10m": 270},
-    "hourly": {"time": _TIMES,
-               "precipitation_probability": [15] * 26,
-               "temperature_2m": [18] * 26, "weather_code": [2] * 26},
-}
-ECCC_DAILY = [
-    {"period": "Today", "text_summary": "Chance of showers. High 22."},
-    {"period": "Tonight", "text_summary": "Clearing. Low 12."},
-    {"period": "Wednesday", "text_summary": "Sunny. High 24."},
-]
-ECCC_ALERTS = {"warnings": {"label": "Warnings",
-                            "value": [{"title": "Severe Thunderstorm Warning", "date": "2:15 PM EDT"}]},
-               "watches": {"label": "Watches", "value": []},
-               "advisories": {"label": "Advisories", "value": []}}
-ECCC_NONE = {k: {"label": k.title(), "value": []} for k in ("warnings", "watches", "advisories")}
+_TIMES = [(_base + timedelta(hours=k)).strftime("%Y-%m-%dT%H:00") for k in range(30)]
+
+
+def _weather(storm=False):
+    codes = [2] * 30
+    if storm:
+        codes[4] = codes[5] = 95  # thunderstorm a few hours out
+    return {
+        "current": {"temperature_2m": 18.3, "apparent_temperature": 17.1, "precipitation": 0.0,
+                    "weather_code": 2, "wind_speed_10m": 12.4, "wind_direction_10m": 270},
+        "hourly": {"time": _TIMES,
+                   "precipitation_probability": [15] * 30,
+                   "precipitation": [0] * 30,
+                   "temperature_2m": [18] * 30,
+                   "weather_code": codes,
+                   "wind_speed_10m": [10] * 30,
+                   "wind_gusts_10m": [20] * 30},
+        "daily": {"time": [TODAY, "2099-08-22", "2099-08-23"],
+                  "weather_code": [63, 2, 0],
+                  "temperature_2m_max": [22, 24, 25],
+                  "temperature_2m_min": [12, 13, 14],
+                  "precipitation_probability_max": [70, 20, 5]},
+    }
+
+
+STORM = _weather(storm=True)
+CALM = _weather(storm=False)
 
 
 # ==========================================================================
@@ -184,8 +191,8 @@ ECCC_NONE = {k: {"label": k.title(), "value": []} for k in ("warnings", "watches
 def test_pitching_saves_and_decisions(monkeypatch):
     _clear(); _patch_detail(monkeypatch)
     out = mlb.cmd_pitching()
-    assert "Bieber 7.0IP 1ER 4H 7K W (inn 1-7)" in out       # winning pitcher tagged W
-    assert "Varland 1.0IP 0ER 1H 1K SV (inn 9)" in out       # save tagged SV
+    assert "Bieber 7.0IP 1ER 4H 7K W (inn 1-7)" in out
+    assert "Varland 1.0IP 0ER 1H 1K SV (inn 9)" in out
     assert "Miles 1.0IP 0ER 0H 0K (inn 8)" in out
 
 
@@ -207,11 +214,10 @@ def test_line(monkeypatch):
 def test_scoring(monkeypatch):
     _clear(); _patch_detail(monkeypatch)
     out = mlb.cmd_scoring()
-    assert "T2 Okamoto HR 1R (1-0)" in out
-    assert "T7 Springer 1B 2R (5-1)" in out
+    assert "T2 Okamoto HR 1R (1-0)" in out and "T7 Springer 1B 2R (5-1)" in out
 
 
-def test_full_has_all_sections(monkeypatch):
+def test_full(monkeypatch):
     _clear(); _patch_detail(monkeypatch)
     out = mlb.cmd_full()
     for token in ("TOR 5 @ TB 1 - Final", "Line (Final)", "Scoring:", "TOR batting:", "TOR pitching:"):
@@ -221,11 +227,10 @@ def test_full_has_all_sections(monkeypatch):
 def test_last(monkeypatch):
     _clear()
     monkeypatch.setattr(mlb, "_schedule_games", lambda: [FINAL_SCHED])
-    out = mlb.jays_last()
-    assert "Last W: TOR 5, TB 1" in out
+    assert "Last W: TOR 5, TB 1" in mlb.jays_last()
 
 
-def test_next_with_probables(monkeypatch):
+def test_next_probables(monkeypatch):
     _clear()
     monkeypatch.setattr(mlb, "_schedule_games", lambda: [NEXT_SCHED])
     monkeypatch.setattr(mlb, "_get", _fake_get)
@@ -247,48 +252,65 @@ def test_record(monkeypatch):
 # ==========================================================================
 def test_now(monkeypatch):
     _clear()
-    monkeypatch.setattr(openmeteo, "_fetch", lambda: OPENMETEO)
+    monkeypatch.setattr(openmeteo, "_fetch", lambda: CALM)
     out = openmeteo.current_weather()
-    assert "Killarney PP: 18C (feels 17)" in out and "Partly cloudy" in out
+    assert out.startswith("Killarney PP: 18C (feels 17)") and "Partly cloudy" in out and "km/h W" in out
 
 
-def test_alerts(monkeypatch):
+def test_hourly(monkeypatch):
     _clear()
-    monkeypatch.setattr(eccc, "_fetch", lambda: {"daily": ECCC_DAILY, "alerts": ECCC_ALERTS})
-    out = eccc.alerts()
-    assert "WARNINGS: Severe Thunderstorm Warning - 2:15 PM EDT" in out
+    monkeypatch.setattr(openmeteo, "_fetch", lambda: CALM)
+    out = openmeteo.hourly_24()
+    assert out.startswith("Killarney PP 24h (temp/rain):") and out.count("|") == 7
 
 
-def test_today_alert_banner(monkeypatch):
+def test_today(monkeypatch):
     _clear()
-    monkeypatch.setattr(eccc, "_fetch", lambda: {"daily": ECCC_DAILY, "alerts": ECCC_ALERTS})
-    out = eccc.today()
-    assert "ALERT WARNINGS: Severe Thunderstorm Warning" in out
-    assert "Today: Chance of showers. High 22." in out
+    monkeypatch.setattr(openmeteo, "_fetch", lambda: STORM)
+    out = openmeteo.today()
+    assert "Today: Rain. High 22. Rain 70%." in out
+    assert "Tonight:" in out and "Low 12." in out
+    assert "WATCH: Thunderstorms" in out  # banner from forecast
+
+
+def test_forecast(monkeypatch):
+    _clear()
+    monkeypatch.setattr(openmeteo, "_fetch", lambda: CALM)
+    out = openmeteo.forecast()
+    assert out.startswith("Killarney PP 3-day:") and "22/12" in out and "70%" in out
+
+
+def test_alerts_storm(monkeypatch):
+    _clear()
+    monkeypatch.setattr(openmeteo, "_fetch", lambda: STORM)
+    out = openmeteo.alerts()
+    assert "Thunderstorms" in out and "forecast-based" in out and "Not an official" in out
+
+
+def test_alerts_calm(monkeypatch):
+    _clear()
+    monkeypatch.setattr(openmeteo, "_fetch", lambda: CALM)
+    assert openmeteo.alerts() == "Killarney PP: no severe weather in next 24h (forecast-based)."
 
 
 # ==========================================================================
 # Tests - routing
 # ==========================================================================
-def test_menu(monkeypatch):
-    _clear()
+def test_menu():
     m = router.handle("MENU")
-    assert "WEATHER (Killarney):" in m and "JAYS:" in m
-    # weather appears above jays
     assert m.index("WEATHER") < m.index("JAYS:")
 
 
 def test_routing(monkeypatch):
     _clear(); _patch_detail(monkeypatch)
     monkeypatch.setattr(mlb, "_get", _fake_get)
-    monkeypatch.setattr(openmeteo, "_fetch", lambda: OPENMETEO)
-    monkeypatch.setattr(eccc, "_fetch", lambda: {"daily": ECCC_DAILY, "alerts": ECCC_NONE})
+    monkeypatch.setattr(openmeteo, "_fetch", lambda: CALM)
     assert "TOR pitching:" in router.handle("pitch")
-    assert "TOR pitching:" in router.handle("jays pitch")      # JAYS prefix
-    assert "Killarney PP: 18C" in router.handle("now")
-    assert "Killarney PP: 18C" in router.handle("wx now")      # WX prefix
-    assert "No active alerts" in router.handle("alerts")
-    assert router.handle("").startswith("\u26C5 WEATHER")      # empty -> menu
+    assert "TOR pitching:" in router.handle("jays pitch")
+    assert router.handle("now").startswith("Killarney PP: 18C")
+    assert router.handle("wx now").startswith("Killarney PP: 18C")
+    assert "no severe weather" in router.handle("alerts")
+    assert router.handle("").startswith("WEATHER (Killarney)")
     assert router.handle("banana").startswith("Unknown command 'BANANA'")
 
 
@@ -309,24 +331,16 @@ if __name__ == "__main__":
     mp = MP()
     _patch_detail(mp)
     mp.setattr(mlb, "_get", _fake_get)
-    mp.setattr(openmeteo, "_fetch", lambda: OPENMETEO)
-    mp.setattr(eccc, "_fetch", lambda: {"daily": ECCC_DAILY, "alerts": ECCC_ALERTS})
+    mp.setattr(openmeteo, "_fetch", lambda: STORM)
     demos = [
         ("MENU", lambda: router.handle("MENU")),
-        ("NOW", openmeteo.current_weather),
-        ("ALERTS", eccc.alerts),
-        ("TODAY", eccc.today),
-        ("SCORE/LAST", mlb.jays_last),
-        ("LINE", mlb.cmd_line),
-        ("SCORING", mlb.cmd_scoring),
-        ("BATTING", mlb.cmd_batting),
-        ("PITCH", mlb.cmd_pitching),
-        ("RECORD", mlb.record),
+        ("NOW", openmeteo.current_weather), ("HOURLY", openmeteo.hourly_24),
+        ("TODAY", openmeteo.today), ("FORECAST", openmeteo.forecast), ("ALERTS", openmeteo.alerts),
+        ("LAST", mlb.jays_last), ("LINE", mlb.cmd_line), ("SCORING", mlb.cmd_scoring),
+        ("BATTING", mlb.cmd_batting), ("PITCH", mlb.cmd_pitching), ("RECORD", mlb.record),
         ("FULL", mlb.cmd_full),
     ]
     for name, fn in demos:
-        # NEXT needs the NEXT schedule; handle separately below
-        s = fn()
-        print(f"\n### {name}\n{s}")
+        print(f"\n### {name}\n{fn()}")
     mp.setattr(mlb, "_schedule_games", lambda: [NEXT_SCHED])
     print(f"\n### NEXT\n{mlb.jays_next()}")

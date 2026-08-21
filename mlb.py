@@ -163,7 +163,7 @@ def _fmt_live_short(game):
     if outs is not None and half in ("Top", "Bottom"):
         state += f", {outs} out"
     tail = f" - {state}" if state else ""
-    return f"\U0001F534 {a_ab} {a_sc} @ {h_ab} {h_sc}{tail}"
+    return f"{a_ab} {a_sc} @ {h_ab} {h_sc}{tail}"
 
 
 def _fmt_final(game, label="Final"):
@@ -173,9 +173,8 @@ def _fmt_final(game, label="Final"):
     a_sc, h_sc = away.get("score", 0) or 0, home.get("score", 0) or 0
     jays_sc, opp_sc = (a_sc, h_sc) if side == "away" else (h_sc, a_sc)
     result = "W" if jays_sc > opp_sc else "L" if jays_sc < opp_sc else "T"
-    emoji = "\u2705" if result == "W" else "\U0001F534" if result == "L" else "\u2796"
     day = util.fmt_day_et(util.parse_utc(game.get("gameDate")))
-    return f"{emoji} {label} {result}: {a_ab} {a_sc}, {h_ab} {h_sc} ({day})"
+    return f"{label} {result}: {a_ab} {a_sc}, {h_ab} {h_sc} ({day})"
 
 
 def _probable_line(abbr, pp):
@@ -197,7 +196,7 @@ def _fmt_upcoming(game, prefix="Next", probables=False):
     _, detailed = _state(game)
     note = f" [{detailed}]" if detailed in ("Postponed", "Suspended") else ""
     loc = f" ({venue})" if venue else ""
-    head = (f"\U0001F535 {prefix}: TOR {vs} {_short(opp)}, "
+    head = (f"{prefix}: TOR {vs} {_short(opp)}, "
             f"{util.fmt_day_et(dt)} {util.fmt_time_et(dt)}{loc}{note}")
     if not probables:
         return head
@@ -261,7 +260,7 @@ def record():
                 div = rec.get("division", {}).get("nameShort") or "AL East"
                 gb = tr.get("divisionGamesBack", tr.get("gamesBack", "-"))
                 streak = tr.get("streak", {}).get("streakCode", "")
-                parts = [f"\U0001F4CB TOR {w}-{l}"]
+                parts = [f"TOR {w}-{l}"]
                 if rank:
                     parts.append(f"{rank} {div}")
                 parts.append("1st place" if gb in ("-", "0.0", 0) else f"{gb} GB")
@@ -304,8 +303,7 @@ def _score_line(feed):
     a_r = ls.get("away", {}).get("runs", 0) or 0
     h_r = ls.get("home", {}).get("runs", 0) or 0
     state = _state_str(feed)
-    emoji = "\u2705" if state == "Final" else "\U0001F534"
-    return (f"{emoji} {away.get('abbreviation', 'AWY')} {a_r} @ "
+    return (f"{away.get('abbreviation', 'AWY')} {a_r} @ "
             f"{home.get('abbreviation', 'HOM')} {h_r} - {state}")
 
 
@@ -329,7 +327,7 @@ def line(feed):
               f" = {tot('away', 'runs')}R {tot('away', 'hits')}H {tot('away', 'errors')}E")
     h_line = (f"{h_ab} " + " ".join(h_cells) +
               f" = {tot('home', 'runs')}R {tot('home', 'hits')}H {tot('home', 'errors')}E")
-    return f"\U0001F4CA Line ({_state_str(feed)}):\n{a_line}\n{h_line}"
+    return f"Line ({_state_str(feed)}):\n{a_line}\n{h_line}"
 
 
 def scoring(feed):
@@ -352,8 +350,8 @@ def scoring(feed):
         score = f" ({a_s}-{h_s})" if a_s is not None and h_s is not None else ""
         out.append(f"{half}{inning} {_lastname(batter)} {event_s}{rbi_s}{score}".strip())
     if not out:
-        return "\U0001F3C3 No runs have scored."
-    return "\U0001F3C3 Scoring:\n" + "\n".join(out)
+        return "No runs have scored."
+    return "Scoring:\n" + "\n".join(out)
 
 
 def batting(feed):
@@ -381,8 +379,8 @@ def batting(feed):
         tail = (", " + ", ".join(extra)) if extra else ""
         out.append(f"{name} {h}-{ab}{tail}")
     if not out:
-        return "\U0001F528 No Jays hits yet."
-    return "\U0001F528 TOR batting:\n" + "\n".join(out)
+        return "No Jays hits yet."
+    return "TOR batting:\n" + "\n".join(out)
 
 
 def _pitcher_inning_ranges(feed):
@@ -429,8 +427,8 @@ def pitching(feed):
         rng_s = f" (inn {rng})" if rng else ""
         out.append(f"{name and _lastname(name)} {ip}IP {er}ER {hits}H {k}K{dec_s}{rng_s}")
     if not out:
-        return "\u26BE No Jays pitching data yet."
-    return "\u26BE TOR pitching:\n" + "\n".join(out)
+        return "No Jays pitching data yet."
+    return "TOR pitching:\n" + "\n".join(out)
 
 
 def full(feed):

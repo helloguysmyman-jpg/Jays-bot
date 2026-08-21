@@ -1,24 +1,22 @@
 """Combined SMS router: Killarney weather + Toronto Blue Jays.
 
-Weather (Open-Meteo + Environment Canada): NOW, HOURLY, TODAY, FORECAST, ALERTS
+Weather (Open-Meteo): NOW, HOURLY, TODAY, FORECAST, ALERTS
 Jays (MLB Stats API): SCORE, LINE, SCORING, PITCH, BATTING, FULL, NEXT, LAST, RECORD
 
-Commands are case-insensitive and whitespace-tolerant. There are no name
-clashes between the two sets, so no prefix is needed - but an optional
-WX or JAYS prefix is accepted too (e.g. "WX NOW", "JAYS SCORE").
+Case-insensitive and whitespace-tolerant. No prefix needed (there are no
+name clashes); an optional WX or JAYS prefix is also accepted.
 """
 import logging
 
 import mlb
 import openmeteo
-import eccc
 
 log = logging.getLogger(__name__)
 
 MENU_TEXT = (
-    "\u26C5 WEATHER (Killarney):\n"
+    "WEATHER (Killarney):\n"
     "NOW, HOURLY, TODAY, FORECAST, ALERTS\n"
-    "\u26BE JAYS:\n"
+    "JAYS:\n"
     "SCORE, LINE, SCORING, PITCH, BATTING, FULL, NEXT, LAST, RECORD\n"
     "Reply MENU anytime."
 )
@@ -32,18 +30,17 @@ def _safe(fn, err):
         return err
 
 
-# command keyword -> (handler, error message)
 WEATHER = {
     "NOW": (openmeteo.current_weather, "Weather unavailable right now."),
     "WEATHER": (openmeteo.current_weather, "Weather unavailable right now."),
     "HOURLY": (openmeteo.hourly_24, "Hourly forecast unavailable right now."),
     "24H": (openmeteo.hourly_24, "Hourly forecast unavailable right now."),
-    "TODAY": (eccc.today, "Forecast unavailable right now."),
-    "TONIGHT": (eccc.today, "Forecast unavailable right now."),
-    "FORECAST": (eccc.forecast, "Forecast unavailable right now."),
-    "3DAY": (eccc.forecast, "Forecast unavailable right now."),
-    "ALERTS": (eccc.alerts, "Alerts unavailable right now."),
-    "WARNINGS": (eccc.alerts, "Alerts unavailable right now."),
+    "TODAY": (openmeteo.today, "Forecast unavailable right now."),
+    "TONIGHT": (openmeteo.today, "Forecast unavailable right now."),
+    "FORECAST": (openmeteo.forecast, "Forecast unavailable right now."),
+    "3DAY": (openmeteo.forecast, "Forecast unavailable right now."),
+    "ALERTS": (openmeteo.alerts, "Alerts unavailable right now."),
+    "WARNINGS": (openmeteo.alerts, "Alerts unavailable right now."),
 }
 JAYS = {
     "SCORE": (mlb.jays_now, "Jays data unavailable right now."),
@@ -73,7 +70,6 @@ def handle(body):
         return MENU_TEXT
 
     first = tokens[0]
-    # optional namespace prefixes
     if first in ("WX", "WEATHER") and len(tokens) > 1:
         table, cmd = WEATHER, tokens[1]
     elif first == "JAYS" and len(tokens) > 1:
@@ -88,9 +84,7 @@ def handle(body):
 
     if table is not None:
         entry = table.get(cmd)
-        if entry:
-            return _safe(*entry)
-        return f"Unknown command '{cmd}'. Reply MENU for the list."
+        return _safe(*entry) if entry else f"Unknown command '{cmd}'. Reply MENU for the list."
 
     entry = WEATHER.get(cmd) or JAYS.get(cmd)
     if entry:
