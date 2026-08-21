@@ -59,6 +59,10 @@ def _fetch():
                   "precipitation_probability_max"),
         "forecast_days": 4,
         "wind_speed_unit": "kmh",
+        # Use Environment Canada's model (incl. the 2.5km HRDPS for Ontario) so
+        # readings line up with weather.gc.ca / Canadian weather apps rather than
+        # a coarse global model that misses local precip.
+        "models": "gem_seamless",
     }
     for attempt in range(2):
         try:
