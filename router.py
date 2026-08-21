@@ -17,7 +17,7 @@ MENU_TEXT = (
     "WEATHER (Killarney):\n"
     "NOW, HOURLY, TODAY, FORECAST, ALERTS\n"
     "JAYS:\n"
-    "SCORE, LINE, SCORING, PITCH, BATTING, FULL, NEXT, LAST, RECORD\n"
+    "SCORE, LINE, SCORING, PITCH, BATTING, BASES, FULL, NEXT, LAST, RECORD\n"
     "Reply MENU anytime."
 )
 
@@ -55,6 +55,9 @@ JAYS = {
     "BATTING": (mlb.cmd_batting, "Jays batting unavailable right now."),
     "BATS": (mlb.cmd_batting, "Jays batting unavailable right now."),
     "HITTERS": (mlb.cmd_batting, "Jays batting unavailable right now."),
+    "BASES": (mlb.cmd_bases, "Jays base state unavailable right now."),
+    "RUNNERS": (mlb.cmd_bases, "Jays base state unavailable right now."),
+    "ONBASE": (mlb.cmd_bases, "Jays base state unavailable right now."),
     "FULL": (mlb.cmd_full, "Jays box score unavailable right now."),
     "BOX": (mlb.cmd_full, "Jays box score unavailable right now."),
     "NEXT": (mlb.jays_next, "Jays schedule unavailable right now."),
