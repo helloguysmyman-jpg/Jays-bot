@@ -1,17 +1,20 @@
-"""Official Environment Canada alerts (warnings/watches/advisories/statements).
+"""Official Environment Canada alerts via the weather.gc.ca ATOM alert feed.
 
-No heavy dependencies - fetches ECCC's public CityPage Weather XML with requests
-and parses it with the stdlib. It first resolves Killarney's ECCC site code from
-the official siteList, then reads that site's warnings. Returns:
+One stable, coordinate-keyed URL (no dated folders, site codes, or timestamps):
+  https://weather.gc.ca/rss/alerts/<lat>_<lon>_e.xml
+
+It's an ATOM feed whose <entry> items are the active warnings/watches/advisories/
+statements for that point, each with a title, category, summary, and issue time.
+Parsed with the stdlib (no heavy deps). Returns:
   - a formatted string of active official alerts, or
   - "no active alerts" text if the feed was read but nothing is active, or
-  - None if ECCC couldn't be reached/resolved (caller then falls back to the
-    forecast-based watch in openmeteo.alerts()).
+  - None if the feed couldn't be reached (caller falls back to the forecast
+    watch in openmeteo.alerts()).
 
 Data source: Environment and Climate Change Canada (weather.gc.ca).
 """
 import logging
-import math
+import re
 import xml.etree.ElementTree as ET
 
 import requests
@@ -22,145 +25,67 @@ from cache import cache
 
 log = logging.getLogger(__name__)
 
-SITELIST_URL = "https://dd.weather.gc.ca/citypage_weather/xml/siteList.xml"
-CITYPAGE_URL = "https://dd.weather.gc.ca/citypage_weather/xml/{prov}/{code}_e.xml"
-SITELIST_TTL = 86400   # 24h - site codes rarely change
-WARN_TTL = 600         # 10 min
+# feed uses the same coords as the weather.gc.ca page for Killarney PP
+_LAT = getattr(config, "ECCC_LAT", 46.101)
+_LON = getattr(config, "ECCC_LON", -81.381)
+URL = f"https://weather.gc.ca/rss/alerts/{_LAT:.3f}_{_LON:.3f}_e.xml"
+TTL = 600  # 10 min
 _HEADERS = {"User-Agent": config.USER_AGENT}
+_ATOM = "{http://www.w3.org/2005/Atom}"
 
-# alert event types we treat as active (skip "ended" notices)
-_ACTIVE = ("warning", "watch", "advisory", "statement")
-
-
-def _get_text(url, ttl, cache_key):
-    cached = cache.get(cache_key)
-    if cached is not None:
-        return cached
-    resp = requests.get(url, headers=_HEADERS, timeout=config.HTTP_TIMEOUT)
-    resp.raise_for_status()
-    text = resp.text
-    cache.set(cache_key, text, ttl)
-    return text
+# entries whose title is one of these mean "all clear" - not an active alert
+_NO_ALERT = ("no watches or warnings", "no alerts", "aucune veille")
 
 
-def _parse_coord(raw):
-    """'46.01N' / '81.40W' -> signed float."""
-    if not raw:
-        return None
-    raw = raw.strip()
-    sign = -1 if raw[-1] in ("S", "W") else 1
-    num = raw[:-1] if raw[-1] in ("N", "S", "E", "W") else raw
-    try:
-        return sign * float(num)
-    except ValueError:
-        return None
+def _clean(text):
+    text = re.sub(r"<[^>]+>", " ", text or "")            # strip any HTML
+    return re.sub(r"\s+", " ", text).strip()
 
 
-def _resolve_site():
-    """Find Killarney's ECCC (provinceCode, siteCode). Cached. None on failure."""
-    cached = cache.get("eccc_site")
-    if cached is not None:
-        return cached
-    xml = _get_text(SITELIST_URL, SITELIST_TTL, "eccc_sitelist")
-    root = ET.fromstring(xml)
+def _fetch_entries():
+    cached = cache.get("eccc_alert_xml")
+    if cached is None:
+        resp = requests.get(URL, headers=_HEADERS, timeout=config.HTTP_TIMEOUT)
+        resp.raise_for_status()
+        cached = resp.text
+        cache.set("eccc_alert_xml", cached, TTL)
+    root = ET.fromstring(cached)
 
-    name_match = None
-    nearest = None
-    nearest_dist = float("inf")
-    for site in root.findall("site"):
-        code = site.get("code")
-        prov = (site.findtext("provinceCode") or "").strip()
-        name = (site.findtext("nameEn") or "").strip()
-        if not code or not prov:
+    alerts = []
+    for entry in root.findall(f"{_ATOM}entry"):
+        title = _clean(entry.findtext(f"{_ATOM}title"))
+        if not title or any(k in title.lower() for k in _NO_ALERT):
             continue
-        # prefer an exact Ontario "Killarney" name match
-        if prov == "ON" and "killarney" in name.lower():
-            name_match = (prov, code, name)
-            break
-        lat = _parse_coord(site.findtext("latitude"))
-        lon = _parse_coord(site.findtext("longitude"))
-        if lat is not None and lon is not None:
-            d = _haversine(config.KILLARNEY_LAT, config.KILLARNEY_LON, lat, lon)
-            if d < nearest_dist:
-                nearest_dist, nearest = d, (prov, code, name)
-
-    site = name_match or nearest
-    if site:
-        cache.set("eccc_site", site, SITELIST_TTL)
-    return site
-
-
-def _haversine(lat1, lon1, lat2, lon2):
-    r = 6371.0
-    p1, p2 = math.radians(lat1), math.radians(lat2)
-    dp = math.radians(lat2 - lat1)
-    dl = math.radians(lon2 - lon1)
-    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
-    return 2 * r * math.asin(math.sqrt(a))
-
-
-def _issue_time(event):
-    for dt in event.findall("dateTime"):
-        summary = dt.findtext("textSummary")
-        if summary:
-            return summary.strip()
-    return ""
-
-
-def _parse_alerts(citypage_xml):
-    """-> list of 'HEADLINE (issued ...)' strings for active alerts."""
-    root = ET.fromstring(citypage_xml)
-    warnings = root.find("warnings")
-    if warnings is None:
-        return []
-    out = []
-    for event in warnings.findall("event"):
-        etype = (event.get("type") or "").lower()
-        desc = (event.get("description") or "").strip()
-        low = desc.lower()
-        if "ended" in low or etype == "ended":
-            continue
-        if etype not in _ACTIVE and not any(k in low for k in _ACTIVE):
-            continue
-        when = _issue_time(event)
-        out.append(f"{desc.upper()}" + (f" (issued {when})" if when else ""))
-    return out
+        summary = _clean(entry.findtext(f"{_ATOM}summary"))
+        alerts.append((title, summary))
+    return alerts
 
 
 def alerts():
-    """Official ECCC alerts string, or None if ECCC couldn't be reached."""
+    """Official ECCC alerts string, or None if the feed couldn't be reached."""
     try:
-        site = _resolve_site()
-        if not site:
-            return None
-        prov, code, _name = site
-        xml = _get_text(CITYPAGE_URL.format(prov=prov, code=code),
-                        WARN_TTL, f"eccc_warn:{code}")
-        active = _parse_alerts(xml)
+        active = _fetch_entries()
     except Exception as exc:
         log.warning("ECCC alerts unavailable (%s)", exc)
         return None
-
     if not active:
         return f"{config.LOCATION_NAME}: no active ECCC alerts (official)."
-    body = "; ".join(active)
-    return f"ECCC ALERT - {config.LOCATION_NAME}: {body}. Full text: weather.gc.ca"
+    parts = []
+    for title, summary in active:
+        # title already names the alert + place; append the summary if it adds info
+        parts.append(f"{title}. {summary}" if summary else title)
+    body = " || ".join(parts)
+    return f"ECCC ALERT: {body} (weather.gc.ca)"
 
 
 def banner():
-    """Short one-line official-alert banner for TODAY, or '' if none/unavailable."""
+    """One-line official-alert banner for TODAY, or '' if none/unavailable."""
     try:
-        site = _resolve_site()
-        if not site:
-            return ""
-        prov, code, _name = site
-        xml = _get_text(CITYPAGE_URL.format(prov=prov, code=code),
-                        WARN_TTL, f"eccc_warn:{code}")
-        active = _parse_alerts(xml)
+        active = _fetch_entries()
     except Exception:
         return ""
     if not active:
         return ""
-    first = active[0].split(" (issued")[0]
+    first = active[0][0]
     extra = f" (+{len(active) - 1} more)" if len(active) > 1 else ""
     return f"ECCC ALERT: {first}{extra}"
