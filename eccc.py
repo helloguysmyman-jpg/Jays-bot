@@ -89,3 +89,4 @@ def banner():
     first = active[0][0]
     extra = f" (+{len(active) - 1} more)" if len(active) > 1 else ""
     return f"ECCC ALERT: {first}{extra}"
+
