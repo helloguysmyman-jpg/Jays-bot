@@ -1,15 +1,19 @@
 """Combined SMS router: Killarney weather + Toronto Blue Jays.
 
-Weather (Open-Meteo): NOW, HOURLY, TODAY, FORECAST, ALERTS
-Jays (MLB Stats API): SCORE, LINE, SCORING, PITCH, BATTING, FULL, NEXT, LAST, RECORD
+Weather (Open-Meteo + official Environment Canada alerts):
+  NOW, HOURLY, TODAY, FORECAST, ALERTS
+Jays (MLB Stats API):
+  SCORE, LINE, SCORING, PITCH, BATTING, BASES, FULL, NEXT, LAST, RECORD
+KEY explains the abbreviations.
 
-Case-insensitive and whitespace-tolerant. No prefix needed (there are no
-name clashes); an optional WX or JAYS prefix is also accepted.
+Case-insensitive and whitespace-tolerant. No prefix needed (there are no name
+clashes); an optional WX or JAYS prefix is also accepted.
 """
 import logging
 
 import mlb
 import openmeteo
+import eccc
 
 log = logging.getLogger(__name__)
 
@@ -18,7 +22,18 @@ MENU_TEXT = (
     "NOW, HOURLY, TODAY, FORECAST, ALERTS\n"
     "JAYS:\n"
     "SCORE, LINE, SCORING, PITCH, BATTING, BASES, FULL, NEXT, LAST, RECORD\n"
-    "Reply MENU anytime."
+    "KEY = abbreviations. Reply MENU anytime."
+)
+
+KEY_TEXT = (
+    "KEY:\n"
+    "Batting: X-Y = hits-atBats. BB=walk, RBI=runs batted in, HR=home run.\n"
+    "Hits: single, double, triple, HR.\n"
+    "Pitching: IP=innings, ER=earned runs, H=hits, K=strikeouts, P=pitches,\n"
+    "W/L/SV=win/loss/save, inn=innings worked.\n"
+    "Line: R/H/E = runs/hits/errors.\n"
+    "Bases: 1B/2B/3B = who's on that base, AB = batter up.\n"
+    "Weather: % = rain chance, mm = rainfall."
 )
 
 
@@ -30,17 +45,38 @@ def _safe(fn, err):
         return err
 
 
+def _weather_alerts():
+    """Official ECCC alerts if reachable, else the forecast-based watch."""
+    try:
+        official = eccc.alerts()
+        if official is not None:
+            return official
+    except Exception as exc:
+        log.warning("eccc alerts error: %s", exc)
+    return openmeteo.alerts()
+
+
+def _today():
+    """TODAY forecast, with an official ECCC banner on top if one is active."""
+    body = openmeteo.today()
+    try:
+        b = eccc.banner()
+    except Exception:
+        b = ""
+    return f"{b}\n{body}" if b else body
+
+
 WEATHER = {
     "NOW": (openmeteo.current_weather, "Weather unavailable right now."),
     "WEATHER": (openmeteo.current_weather, "Weather unavailable right now."),
     "HOURLY": (openmeteo.hourly_24, "Hourly forecast unavailable right now."),
     "24H": (openmeteo.hourly_24, "Hourly forecast unavailable right now."),
-    "TODAY": (openmeteo.today, "Forecast unavailable right now."),
-    "TONIGHT": (openmeteo.today, "Forecast unavailable right now."),
+    "TODAY": (_today, "Forecast unavailable right now."),
+    "TONIGHT": (_today, "Forecast unavailable right now."),
     "FORECAST": (openmeteo.forecast, "Forecast unavailable right now."),
     "3DAY": (openmeteo.forecast, "Forecast unavailable right now."),
-    "ALERTS": (openmeteo.alerts, "Alerts unavailable right now."),
-    "WARNINGS": (openmeteo.alerts, "Alerts unavailable right now."),
+    "ALERTS": (_weather_alerts, "Alerts unavailable right now."),
+    "WARNINGS": (_weather_alerts, "Alerts unavailable right now."),
 }
 JAYS = {
     "SCORE": (mlb.jays_now, "Jays data unavailable right now."),
@@ -84,6 +120,8 @@ def handle(body):
 
     if cmd in ("MENU", "CMDS", "HELP", "COMMANDS"):
         return MENU_TEXT
+    if cmd in ("KEY", "LEGEND", "GLOSSARY", "ABBR"):
+        return KEY_TEXT
 
     if table is not None:
         entry = table.get(cmd)
