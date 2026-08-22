@@ -24,7 +24,7 @@ PITCHER_TTL = 3600
 _HEADERS = {"User-Agent": config.USER_AGENT}
 
 EVENT_SHORT = {
-    "Home Run": "HR", "Single": "1B", "Double": "2B", "Triple": "3B",
+    "Home Run": "HR", "Single": "single", "Double": "double", "Triple": "triple",
     "Walk": "BB", "Intent Walk": "IBB", "Hit By Pitch": "HBP",
     "Sac Fly": "SF", "Sac Fly Double Play": "SF", "Sac Bunt": "SAC",
     "Grounded Into DP": "GIDP", "Double Play": "DP", "Field Error": "error",
