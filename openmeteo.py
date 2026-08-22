@@ -1,10 +1,11 @@
 """All Killarney PP weather via Open-Meteo (free, no key, no heavy deps).
 
-Covers current conditions, a 24h hourly strip, worded today/tonight, a 3-day
-outlook, and a forecast-based severe-weather watch. Open-Meteo does not carry
-official government warnings, so ALERTS is derived from the forecast (thunder,
-heavy precip, strong wind, freezing) and is clearly labelled as such - not an
-official Environment Canada warning. Data source: Open-Meteo.com (CC BY 4.0).
+Temperature/wind/condition come from Environment Canada's model (gem_seamless)
+so they match Canadian sources; the rain probability comes from Open-Meteo's
+default model in a second call, because the Canadian model doesn't provide a
+precipitation probability. Actual rainfall (mm) is also reported so active rain
+shows even when the probability model underplays it. ALERTS is forecast-based
+(not an official ECCC warning). Data source: Open-Meteo.com (CC BY 4.0).
 """
 import logging
 import time
@@ -43,47 +44,65 @@ WMO_SHORT = {
 COMPASS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
 
 
-def _fetch():
-    cached = cache.get("openmeteo")
-    if cached is not None:
-        return cached
-    params = {
-        "latitude": config.KILLARNEY_LAT,
-        "longitude": config.KILLARNEY_LON,
-        "timezone": config.TIMEZONE,
-        "current": ("temperature_2m,apparent_temperature,precipitation,"
-                    "weather_code,wind_speed_10m,wind_direction_10m"),
-        "hourly": ("precipitation_probability,precipitation,weather_code,"
-                   "temperature_2m,wind_speed_10m,wind_gusts_10m"),
-        "daily": ("weather_code,temperature_2m_max,temperature_2m_min,"
-                  "precipitation_probability_max"),
-        "forecast_days": 4,
-        "wind_speed_unit": "kmh",
-        # Use Environment Canada's model (incl. the 2.5km HRDPS for Ontario) so
-        # readings line up with weather.gc.ca / Canadian weather apps rather than
-        # a coarse global model that misses local precip.
-        "models": "gem_seamless",
-    }
+def _request(params):
+    """GET Open-Meteo with one retry on failure."""
     for attempt in range(2):
         try:
             resp = requests.get(URL, params=params, headers=_HEADERS,
                                 timeout=config.HTTP_TIMEOUT)
             resp.raise_for_status()
-            data = resp.json()
-            cache.set("openmeteo", data, TTL)
-            cache.set("openmeteo_stale", data, STALE_TTL)
-            return data
-        except Exception as exc:
+            return resp.json()
+        except Exception:
             if attempt == 0:
-                time.sleep(1.2)  # brief backoff, then one retry
+                time.sleep(1.2)
                 continue
-            # On repeated failure (e.g. a shared-IP 429 on Railway), serve the
-            # last good reading if we have one - stale weather beats none.
-            stale = cache.get("openmeteo_stale")
-            if stale is not None:
-                log.warning("open-meteo fetch failed (%s); serving stale data", exc)
-                return stale
             raise
+
+
+def _fetch():
+    cached = cache.get("openmeteo")
+    if cached is not None:
+        return cached
+
+    base = {"latitude": config.KILLARNEY_LAT, "longitude": config.KILLARNEY_LON,
+            "timezone": config.TIMEZONE, "wind_speed_unit": "kmh", "forecast_days": 4}
+
+    # Call 1: Environment Canada model - accurate temp/wind/condition/rainfall.
+    primary = dict(base, models="gem_seamless",
+                   current=("temperature_2m,apparent_temperature,precipitation,"
+                            "weather_code,wind_speed_10m,wind_direction_10m"),
+                   hourly=("precipitation,weather_code,temperature_2m,"
+                           "wind_speed_10m,wind_gusts_10m"),
+                   daily="weather_code,temperature_2m_max,temperature_2m_min")
+    try:
+        data = _request(primary)
+    except Exception as exc:
+        stale = cache.get("openmeteo_stale")
+        if stale is not None:
+            log.warning("open-meteo primary failed (%s); serving stale data", exc)
+            return stale
+        raise
+
+    # Call 2: default model - reliable rain probability (GEM doesn't provide it).
+    try:
+        prob = _request(dict(base, hourly="precipitation_probability",
+                             daily="precipitation_probability_max"))
+        h = prob.get("hourly", {})
+        tmap = dict(zip(h.get("time", []), h.get("precipitation_probability", [])))
+        data.setdefault("hourly", {})["precipitation_probability"] = [
+            tmap.get(t) for t in data.get("hourly", {}).get("time", [])]
+        d = prob.get("daily", {})
+        dmap = dict(zip(d.get("time", []), d.get("precipitation_probability_max", [])))
+        data.setdefault("daily", {})["precipitation_probability_max"] = [
+            dmap.get(t) for t in data.get("daily", {}).get("time", [])]
+    except Exception as exc:
+        log.warning("precip-probability blend failed (%s)", exc)
+        data.setdefault("hourly", {}).setdefault("precipitation_probability", [])
+        data.setdefault("daily", {}).setdefault("precipitation_probability_max", [])
+
+    cache.set("openmeteo", data, TTL)
+    cache.set("openmeteo_stale", data, STALE_TTL)
+    return data
 
 
 def _compass(deg):
@@ -116,7 +135,7 @@ def _at(arr, i):
 # Commands
 # --------------------------------------------------------------------------
 def current_weather():
-    """NOW - current temp, feels-like, conditions, wind, rain chance."""
+    """NOW - current temp, feels-like, conditions, wind, and rain (mm + chance)."""
     data = _fetch()
     cur = data.get("current", {})
     temp = util.round_num(cur.get("temperature_2m"))
@@ -125,12 +144,19 @@ def current_weather():
     wind = util.round_num(cur.get("wind_speed_10m"))
     wdir = _compass(cur.get("wind_direction_10m"))
     pop = _at(data.get("hourly", {}).get("precipitation_probability", []), _hour_index(data))
+    precip_now = cur.get("precipitation") or 0
+
     head = f"{config.LOCATION_NAME}: {temp}C"
     if feels is not None and feels != temp:
         head += f" (feels {feels})"
     segs = [f"{head}, {cond}", f"Wind {wind} km/h {wdir}".strip()]
+    rain_bits = []
+    if precip_now and precip_now > 0:
+        rain_bits.append(f"raining {precip_now}mm")
     if pop is not None:
-        segs.append(f"Rain {pop}%")
+        rain_bits.append(f"{pop}% chance")
+    if rain_bits:
+        segs.append("Rain: " + ", ".join(rain_bits))
     return ". ".join(segs) + "."
 
 
@@ -146,7 +172,9 @@ def hourly_24():
         return "Hourly data unavailable right now."
     pts = []
     for j in range(i, min(i + 24, len(times)), 3):
-        pts.append(f"{_hhmm(times[j])} {util.round_num(_at(temps, j))}C {_at(pops, j)}%")
+        pop = _at(pops, j)
+        ptxt = f"{pop}%" if pop is not None else "-"
+        pts.append(f"{_hhmm(times[j])} {util.round_num(_at(temps, j))}C {ptxt}")
     return f"{config.LOCATION_NAME} 24h (temp/rain): " + " | ".join(pts)
 
 
